@@ -24,7 +24,7 @@ def process_mpd(mpd_file_path, download_folder_path, output_file_name, length, k
     nm3u8dl_command = (
         f"n_m3u8dl-re \"{mpd_file_path}\" --save-dir \"{download_folder_path}\" "
         f"--save-name \"{output_file_name}.mp4\" --auto-select --concurrent-download "
-        f"--key {key} --del-after-done --no-log --tmp-dir \"{download_folder_path}\" "
+        f"--no-log --tmp-dir \"{download_folder_path}\" "
         f"--log-level ERROR"
     )
 
@@ -33,7 +33,7 @@ def process_mpd(mpd_file_path, download_folder_path, output_file_name, length, k
         nm3u8dl_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
 
-    progress.update(task_id,  description=f"Merging segments {remove_emojis_and_binary(output_file_name)}", completed=0)
+    progress.update(task_id,  description=f"Merging segments {remove_emojis_and_binary(output_file_name)} [DASH]", completed=0)
     
     while True:
         output = process_nm3u8dl.stdout.readline()
@@ -53,10 +53,10 @@ def process_mpd(mpd_file_path, download_folder_path, output_file_name, length, k
     stdout_nm3u8dl, stderr_nm3u8dl = process_nm3u8dl.communicate()
 
     if stderr_nm3u8dl or process_nm3u8dl.returncode != 0:
-        progress.console.log(f"[red]Error Downloading Segments {remove_emojis_and_binary(output_file_name)}[/red] ✕")
+        progress.console.log(f"[red]Error Downloading Segments {remove_emojis_and_binary(output_file_name)} [DASH][/red] ✕")
         progress.remove_task(task_id)
         return
-
+    
     files = os.listdir(download_folder_path)
     mp4_files = [f for f in files if f.endswith('.mp4')]
     m4a_files = [f for f in files if f.endswith('.m4a')]
@@ -65,15 +65,37 @@ def process_mpd(mpd_file_path, download_folder_path, output_file_name, length, k
         progress.console.log(f"[red]Missing Video and Audio files {output_file_name}[/red] ✕")
         progress.remove_task(task_id)
         return
-
-    progress.update(task_id,  description=f"Merging Video and Audio {remove_emojis_and_binary(output_file_name)}", completed=0)
     
     video_path = os.path.join(download_folder_path, mp4_files[0])
     audio_path = os.path.join(download_folder_path, m4a_files[0])
     output_path = os.path.join(os.path.dirname(download_folder_path), output_file_name)
 
+    progress.update(task_id,  description=f"Decrypting {remove_emojis_and_binary(output_file_name)} [DASH]", completed=0)
+
+    video_decrypt_command = (
+        f"mp4decrypt --key {key} \"{video_path}\" \"{video_path}.dec\""
+    )
+
+    audio_decrypt_command = (
+        f"mp4decrypt --key {key} \"{audio_path}\" \"{audio_path}.dec\""
+    )
+
+    process = subprocess.Popen(
+        video_decrypt_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+
+    stdout_decrypt_v, stderr_decrypt_v = process.communicate()
+
+    process = subprocess.Popen(
+        audio_decrypt_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+
+    stdout_decrypt_a, stderr_decrypt_a = process.communicate()
+
+    progress.update(task_id,  description=f"Merging Video and Audio {remove_emojis_and_binary(output_file_name)} [DASH]", completed=0)
+    
     ffmpeg_command = (
-        f"ffmpeg -i \"{video_path}\" -i \"{audio_path}\" -c:v copy -c:a aac -y "
+        f"ffmpeg -i \"{video_path}.dec\" -i \"{audio_path}.dec\" -c:v copy -c:a aac -y "
         f"\"{output_path}.mp4\""
     )
 
@@ -97,10 +119,10 @@ def process_mpd(mpd_file_path, download_folder_path, output_file_name, length, k
     stdout_ffmpeg, stderr_ffmpeg = process_ffmpeg.communicate()
 
     if stderr_ffmpeg or process_ffmpeg.returncode != 0:
-        progress.console.log(f"[red]Error Merging Video and Audio files {remove_emojis_and_binary(output_file_name)}[/red] ✕")
+        progress.console.log(f"[red]Error Merging Video and Audio files {remove_emojis_and_binary(output_file_name)} [DASH][/red] ✕")
         progress.remove_task(task_id)
         return
 
-    progress.console.log(f"[green]Downloaded {remove_emojis_and_binary(output_file_name)}[/green] ✓")
+    progress.console.log(f"[green]Downloaded {remove_emojis_and_binary(output_file_name)} [DASH][/green] ✓")
     progress.remove_task(task_id)
     shutil.rmtree(download_folder_path)
