@@ -22,6 +22,7 @@ from utils.process_mpd import download_and_merge_mpd
 from utils.process_captions import download_captions
 from utils.process_assets import download_supplementary_assets
 from utils.process_articles import download_article
+from utils.process_mp4 import download_mp4
 
 console = Console()
 
@@ -132,7 +133,7 @@ class Udemy:
                     'children': []
                 }
                 curriculum.append(current_chapter)
-            elif item['_class'] in ['lecture', 'practice']:
+            elif item['_class'] == 'lecture':
                 if current_chapter is not None:
                     current_chapter['children'].append(item)
                     if item['_class'] == 'lecture':
@@ -183,20 +184,22 @@ class Udemy:
 
     def download_lecture(self, course_id, lecture, lect_info, temp_folder_path, lindex, folder_path, task_id, progress):
         if not skip_captions and len(lect_info["asset"]["captions"]) > 0:
-            download_captions(lect_info["asset"]["captions"], folder_path, f"{lindex}. {sanitize_filename(lecture['title'])}", captions)
+            download_captions(lect_info["asset"]["captions"], folder_path, f"{lindex}. {sanitize_filename(lecture['title'])}", captions, convert_to_srt)
 
         if not skip_assets and len(lecture["supplementary_assets"]) > 0:
             download_supplementary_assets(self, lecture["supplementary_assets"], folder_path, course_id, lect_info["id"])
 
         if not skip_lectures and lect_info['asset']['asset_type'] == "Video":
             mpd_url = next((item['src'] for item in lect_info['asset']['media_sources'] if item['type'] == "application/dash+xml"), None)
-            # mp4_url = next((item['src'] for item in lect_info['asset']['media_sources'] if item['type'] == "video/mp4"), None)
+            mp4_url = next((item['src'] for item in lect_info['asset']['media_sources'] if item['type'] == "video/mp4"), None)
             m3u8_url = next((item['src'] for item in lect_info['asset']['media_sources'] if item['type'] == "application/x-mpegURL"), None)
             
             if mpd_url is None:
                 if m3u8_url is None:
-                    pass
-                    logger.error(f"This lecture appears to be served in different format. We currently do not support downloading this format. Please create an issue on GitHub if you need this feature.")
+                    if mp4_url is None:
+                        logger.error(f"This lecture appears to be served in different format. We currently do not support downloading this format. Please create an issue on GitHub if you need this feature.")
+                    else:
+                        download_mp4(mp4_url, temp_folder_path, f"{lindex}. {sanitize_filename(lecture['title'])}", task_id, progress)
                 else:
                     download_and_merge_m3u8(m3u8_url, temp_folder_path, f"{lindex}. {sanitize_filename(lecture['title'])}", task_id, progress)
             else:
@@ -230,13 +233,15 @@ class Udemy:
                 f"{lindex:02}" if lindex < 10 else f"{lindex}", 
                 lecture)
                 for mindex, chapter in enumerate(curriculum, start=1)
+                if is_valid_chapter(mindex, start_chapter, end_chapter)
                 for lindex, lecture in enumerate(chapter['children'], start=1)
+                if is_valid_lecture(mindex, lindex, start_chapter, start_lecture, end_chapter, end_lecture)
             )
 
             for _ in range(max_concurrent_lectures):
                 try:
                     mindex, chapter, lindex, lecture = next(task_generator)
-                    folder_path = os.path.join(COURSE_DIR, f"{mindex}. {sanitize_filename(chapter['title'])}")
+                    folder_path = os.path.join(COURSE_DIR, f"{mindex}. {remove_emojis_and_binary(sanitize_filename(chapter['title']))}")
                     temp_folder_path = os.path.join(folder_path, str(lecture['id']))
                     self.create_directory(temp_folder_path)
                     lect_info = self.fetch_lecture_info(course_id, lecture['id'])
@@ -298,13 +303,13 @@ def check_prerequisites():
 
     try:
         subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-    except subprocess.CalledProcessError:
+    except:
         logger.error("ffmpeg is not installed or not found in the system PATH.")
         return False
     
     try:
         subprocess.run(["n_m3u8dl-re", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-    except subprocess.CalledProcessError:
+    except:
         logger.error("Make sure mp4decrypt & n_m3u8dl-re is not installed or not found in the system PATH.")
         return False
     
@@ -313,7 +318,7 @@ def check_prerequisites():
 def main():
 
     try:
-        global course_url, key, cookie_path, COURSE_DIR, captions, max_concurrent_lectures, skip_captions, skip_assets, skip_lectures, skip_articles, skip_assignments
+        global course_url, key, cookie_path, COURSE_DIR, captions, max_concurrent_lectures, skip_captions, skip_assets, skip_lectures, skip_articles, skip_assignments, convert_to_srt, start_chapter, end_chapter, start_lecture, end_lecture
 
         parser = argparse.ArgumentParser(description="Udemy Course Downloader")
         parser.add_argument("--id", "-i", type=int, required=False, help="The ID of the Udemy course to download")
@@ -323,7 +328,14 @@ def main():
         parser.add_argument("--load", "-l", help="Load course curriculum from file", action=LoadAction, const=True, nargs='?')
         parser.add_argument("--save", "-s", help="Save course curriculum to a file", action=LoadAction, const=True, nargs='?')
         parser.add_argument("--concurrent", "-cn", type=int, default=4, help="Maximum number of concurrent downloads")
+        
+        # parser.add_argument("--quality", "-q", type=str, help="Specify the quality of the videos to download.")
+        parser.add_argument("--start-chapter", type=int, help="Start the download from the specified chapter")
+        parser.add_argument("--start-lecture", type=int, help="Start the download from the specified lecture")
+        parser.add_argument("--end-chapter", type=int, help="End the download at the specified chapter")
+        parser.add_argument("--end-lecture", type=int, help="End the download at the specified lecture")
         parser.add_argument("--captions", type=str, help="Specify what captions to download. Separate multiple captions with commas")
+        parser.add_argument("--srt", help="Convert the captions to srt format", action=LoadAction, const=True, nargs='?')
         
         parser.add_argument("--tree", help="Create a tree view of the course curriculum", action=LoadAction, nargs='?')
 
@@ -389,7 +401,7 @@ def main():
         skip_assignments = args.skip_assignments
 
         course_info = udemy.fetch_course(course_id)
-        COURSE_DIR = os.path.join(DOWNLOAD_DIR, sanitize_filename(course_info['title']))
+        COURSE_DIR = os.path.join(DOWNLOAD_DIR, remove_emojis_and_binary(sanitize_filename(course_info['title'])))
 
         logger.info(f"Course Title: {course_info['title']}")
 
@@ -451,6 +463,39 @@ def main():
                     rprint(root_tree, file=f)
                     logger.info(f"The course curriculum tree has been successfully saved to {args.tree}")
 
+        if args.srt:
+            convert_to_srt = True
+        else:
+            convert_to_srt = False
+            
+        if args.start_lecture:
+            if args.start_chapter:
+                start_chapter = args.start_chapter
+                start_lecture = args.start_lecture
+            else:
+                logger.error("When using --start-lecture please provide --start-chapter")
+                sys.exit(1)
+        elif args.start_chapter:
+            start_chapter = args.start_chapter
+            start_lecture = 0
+        else:
+            start_chapter = 0
+            start_lecture = 0
+
+        if args.end_lecture:
+            if args.end_chapter:
+                end_chapter = args.end_chapter
+                end_lecture = args.end_lecture
+            elif args.end_chapter:
+                logger.error("When using --end-lecture please provide --end-chapter")
+                sys.exit(1)
+        elif args.end_chapter:
+            end_chapter = args.end_chapter
+            end_lecture = 1000
+        else:
+            end_chapter = len(course_curriculum)
+            end_lecture = 1000
+
         logger.info("The course download is starting. Please wait while the materials are being downloaded.")
 
         start_time = time.time()
@@ -465,7 +510,7 @@ def main():
         logger.info("Download Complete.")
     except KeyboardInterrupt:
         logger.warning("Process interrupted. Exiting")
-        sys.exit(0)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
